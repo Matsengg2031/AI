@@ -3,7 +3,8 @@ import { GoogleGenerativeAI } from "npm:@google/generative-ai";
 // ==================== CONFIGURATION ====================
 const MODELS = [
   "gemini-3-flash-preview",   // Worker 1
-  "gemini-2.5-flash-lite",    // Worker 2
+  "gemini-2.0-flash-001",     // Worker 2
+  "gemini-2.5-flash-lite",    // Worker 3
   "gemini-2.5-pro"            // Judge (Tie-Breaker)
 ];
 
@@ -481,10 +482,10 @@ function confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
 
 // ==================== ENSEMBLE CALL (JUDGE MODE) ====================
 async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []): Promise<VotingResult> {
-  console.log(`🎯 Judge Mode: Running 2 Workers Parallel...`);
+  console.log(`🎯 Judge Mode: Running 3 Workers Parallel...`);
   
-  // 1. Run Worker 1 & Worker 2
-  const workers = [MODELS[0], MODELS[1]];
+  // 1. Run Worker 1, Worker 2 & Worker 3 in parallel
+  const workers = [MODELS[0], MODELS[1], MODELS[2]];
   const promises = workers.map(model => callSingleModel(model, prompt));
   const results = await Promise.all(promises);
   
@@ -493,9 +494,6 @@ async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []
     if (r.success) console.log(`   ✓ ${r.model}: ${r.answer} (${r.confidence}%)`);
     else console.log(`   ✗ ${r.model}: ${r.error}`);
   });
-
-  const r1 = results[0];
-  const r2 = results[1];
 
   // Helper: Normalize answer to Label(s) - extract only A-F letters
   // Also handles TRUE/FALSE equivalence (A=TRUE, B=FALSE for select questions)
@@ -543,24 +541,52 @@ async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []
     return a; // Return original if no match
   };
 
-  const a1 = r1.success ? normalize(r1.answer, options) : null;
-  const a2 = r2.success ? normalize(r2.answer, options) : null;
+  // Normalize all worker answers
+  const normalizedAnswers = results.map(r => r.success ? normalize(r.answer, options) : null);
+  
+  // Count votes for each answer
+  const voteCounts: Record<string, { count: number; totalConfidence: number; models: string[] }> = {};
+  results.forEach((r, i) => {
+    if (r.success && normalizedAnswers[i]) {
+      const ans = normalizedAnswers[i]!;
+      if (!voteCounts[ans]) {
+        voteCounts[ans] = { count: 0, totalConfidence: 0, models: [] };
+      }
+      voteCounts[ans].count++;
+      voteCounts[ans].totalConfidence += r.confidence!;
+      voteCounts[ans].models.push(r.model);
+    }
+  });
 
-  // 2. Compare Results
-  // Logic: Both must succeed AND have same EXACT answer (or normalized equivalent)
-  if (r1.success && r2.success && a1 === a2) {
-    console.log(`   🤝 Agreement! Using answer from workers (${r1.answer} ≈ ${r2.answer} -> ${a1}).`);
+  // Find majority answer (2+ votes out of 3)
+  const sortedVotes = Object.entries(voteCounts)
+    .map(([answer, data]) => ({
+      answer,
+      count: data.count,
+      avgConfidence: Math.round(data.totalConfidence / data.count),
+      models: data.models
+    }))
+    .sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      return b.avgConfidence - a.avgConfidence;
+    });
+
+  const topVote = sortedVotes[0];
+
+  // 2. Check for majority (2+ workers agree)
+  if (topVote && topVote.count >= 2) {
+    console.log(`   🤝 Majority! ${topVote.count}/3 workers agree: ${topVote.answer} (${topVote.models.join(", ")})`);
     return {
-      finalAnswer: a1!,
-      finalConfidence: Math.max(r1.confidence!, r2.confidence!),
-      method: "agreement"
+      finalAnswer: topVote.answer,
+      finalConfidence: topVote.avgConfidence,
+      method: topVote.count === 3 ? "unanimous" : "majority"
     };
   }
 
-  // 3. Disagreement or Failure -> Call JUDGE (Model 3)
-  console.log(`   ⚖️  Disagreement/Failure. Calling JUDGE (${MODELS[2]})...`);
+  // 3. No majority (all 3 different or failures) -> Call JUDGE (Model 4)
+  console.log(`   ⚖️  No majority. Calling JUDGE (${MODELS[3]})...`);
   
-  const judgeResult = await callSingleModel(MODELS[2], prompt);
+  const judgeResult = await callSingleModel(MODELS[3], prompt);
   
   if (judgeResult.success) {
     console.log(`   👨‍⚖️ Judge Decision: ${judgeResult.answer} (${judgeResult.confidence}%)`);
