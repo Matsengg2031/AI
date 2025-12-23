@@ -2,11 +2,15 @@ import { GoogleGenerativeAI } from "npm:@google/generative-ai";
 
 // ==================== CONFIGURATION ====================
 const MODELS = [
-  "gemini-2.0-flash-001",      // Worker 1
-  "gemini-2.5-flash-lite", // Worker 2
-  "gemini-2.5-pro"         // Judge (Tie-Breaker)
+  "gemini-3-flash-preview",   // Worker 1
+  "gemini-2.5-flash-lite",    // Worker 2
+  "gemini-2.5-pro"            // Judge (Tie-Breaker)
 ];
+// Note: "gemini-3-pro-preview" might not be available yet via API, 
+// using 2.5 Pro as primary overpower model.
 
+// Toggle ENSEMBLE MODE (true = gunakan voting dari semua model)
+// TRUE = Judge Mode (2 Workers Paralel -> jika beda -> Judge decider)
 const ENSEMBLE_MODE = true;
 
 // Confidence threshold - di bawah ini = konservatif mode
@@ -613,33 +617,6 @@ async function processQueue(): Promise<void> {
     try {
       let finalAnswer: string, modelInfo: string, confidence: number;
       
-      // 🔥 HYBRID: Rule Engine DISABLED (User Request)
-      /*
-      if (typeof rawPrompt === 'object' && rawPrompt.question) {
-        const ruleResult = applyRules(rawPrompt.question, rawPrompt.options || []);
-        
-        if (ruleResult.hit && ruleResult.answer) {
-          finalAnswer = ruleResult.answer;
-          confidence = ruleResult.confidence;
-          modelInfo = `RULE [${ruleResult.source}]`;
-          
-          const duration = Date.now() - startTime;
-          recentAnswers.set(key, { answer: finalAnswer, ts: Date.now() });
-          
-          const qNum = rawPrompt.number ? rawPrompt.number + ". " : "";
-          const qText = rawPrompt.question.substring(0, 55) + "...";
-          console.log(`📝 Soal     : ${qNum}${qText}`);
-          console.log(`💡 Jawaban  : ${finalAnswer} [${confidence}%]`);
-          console.log(`🔧 Rule     : ${ruleResult.source}`);
-          console.log(`⏱️  Waktu    : ${duration}ms (no API call)`);
-          console.log("");
-          
-          resolve({ answer: finalAnswer, duration, confidence });
-          continue; // Skip to next question
-        }
-      }
-      */
-      
       // 🤖 AI Fallback: Use Ensemble or Single Model
       const prompt = buildPrompt(rawPrompt);
       const options = (typeof rawPrompt === 'object' && rawPrompt.options) ? rawPrompt.options : [];
@@ -718,7 +695,7 @@ async function handler(req: Request): Promise<Response> {
 
   // GET /
   if (method === "GET" && path === "/") {
-    return new Response(`Server Ready! (Ensemble: ${ENSEMBLE_MODE}, Confidence Scoring: ON)`, {
+    return new Response(`Test Server Ready! (Ensemble: ${ENSEMBLE_MODE}, Confidence Scoring: ON)`, {
       status: 200,
       headers: { ...corsHeaders(), "Content-Type": "text/plain" }
     });
