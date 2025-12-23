@@ -6,8 +6,6 @@ const MODELS = [
   "gemini-2.5-flash-lite",    // Worker 2
   "gemini-2.5-pro"            // Judge (Tie-Breaker)
 ];
-// Note: "gemini-3-pro-preview" might not be available yet via API, 
-// using 2.5 Pro as primary overpower model.
 
 // Toggle ENSEMBLE MODE (true = gunakan voting dari semua model)
 // TRUE = Judge Mode (2 Workers Paralel -> jika beda -> Judge decider)
@@ -695,7 +693,7 @@ async function handler(req: Request): Promise<Response> {
 
   // GET /
   if (method === "GET" && path === "/") {
-    return new Response(`Test Server Ready! (Ensemble: ${ENSEMBLE_MODE}, Confidence Scoring: ON)`, {
+    return new Response(`Server Ready! (Ensemble: ${ENSEMBLE_MODE}, Confidence Scoring: ON)`, {
       status: 200,
       headers: { ...corsHeaders(), "Content-Type": "text/plain" }
     });
