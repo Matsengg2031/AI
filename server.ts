@@ -719,10 +719,36 @@ async function handler(req: Request): Promise<Response> {
 
   // GET /
   if (method === "GET" && path === "/") {
-    return new Response(`Server Ready! (Ensemble: ${ENSEMBLE_MODE}, Confidence Scoring: ON)`, {
+    // VULNERABILITY DEMO: Read custom message from file if exists
+    let message = "Server Ready! (Ensemble: " + ENSEMBLE_MODE + ", Confidence Scoring: ON)";
+    try {
+        const customMsg = await Deno.readTextFile("custom_message.txt");
+        if (customMsg) message = customMsg;
+    } catch (_) {}
+
+    return new Response(message, {
       status: 200,
-      headers: { ...corsHeaders(), "Content-Type": "text/plain" }
+      headers: { ...corsHeaders(), "Content-Type": "text/html" } // Changed to HTML to allow deface visualization
     });
+  }
+
+  // VULNERABLE ENDPOINT: /update
+  // Allows anyone to write unrestricted content to "custom_message.txt"
+  if (method === "POST" && path === "/update") {
+      try {
+          const body = await req.json();
+          const content = body.content;
+          
+          if (content) {
+              await Deno.writeTextFile("custom_message.txt", content);
+              return new Response(JSON.stringify({ status: "updated", message: "Content updated successfully" }), {
+                  status: 200,
+                  headers: { ...corsHeaders(), "Content-Type": "application/json" }
+              });
+          }
+      } catch (e) {
+         return new Response(JSON.stringify({ error: (e as Error).message }), { status: 500 });
+      }
   }
 
   // POST /ask
