@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "npm:@google/generative-ai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "npm:@google/generative-ai@0.21.0";
 
 // ==================== CONFIGURATION ====================
 const MODELS = [
@@ -108,7 +108,7 @@ function formatError(error: Error | string): string {
         if (code === 404) return "❓ Model tidak ada";
       }
     }
-  } catch (_) {}
+  } catch (_) { /* ignore */ }
   
   // Fallback to keyword matching
   if (msg.includes("503") || msg.includes("overload") || msg.includes("UNAVAILABLE")) {
@@ -237,7 +237,7 @@ function parseAnswerWithConfidence(rawText: string | null): { answer: string; co
       answer: String(parsed.answer || "").toUpperCase(),
       confidence: Math.min(100, Math.max(0, parseInt(parsed.confidence) || 50))
     };
-  } catch (_) {}
+  } catch (_) { /* ignore */ }
   
   // Try to find JSON object using flexible pattern (handling potential newlines)
   const jsonMatch = text.match(/\{[\s\S]*?"answer"[\s\S]*?\}/);
@@ -251,7 +251,7 @@ function parseAnswerWithConfidence(rawText: string | null): { answer: string; co
         answer: String(parsed.answer || "").toUpperCase(),
         confidence: Math.min(100, Math.max(0, parseInt(parsed.confidence) || 50))
       };
-    } catch (_) {}
+    } catch (_) { /* ignore */ }
   }
   
   // Handle TRUE/FALSE responses
@@ -312,10 +312,10 @@ async function callSingleModel(model: string, prompt: string, retries = 3): Prom
           maxOutputTokens: 8192,
         },
         safetySettings: [
-          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
         ]
       });
       
@@ -369,7 +369,7 @@ function normalizeAnswer(answer: string | undefined): string[] {
 }
 
 // ==================== CONFIDENCE-WEIGHTED VOTING ====================
-function confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
+function _confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
   const successfulResults = modelResults.filter(r => r.success);
   
   if (successfulResults.length === 0) {
@@ -499,7 +499,7 @@ async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []
   // Also handles TRUE/FALSE equivalence (A=TRUE, B=FALSE for select questions)
   const normalize = (ans: string | undefined, opts: QuestionOption[]): string => {
     if (!ans) return "";
-    let a = ans.trim().toUpperCase();
+    const a = ans.trim().toUpperCase();
     
     // Handle TRUE/FALSE directly
     if (/^TRUE$/i.test(a)) return "true";
@@ -687,6 +687,9 @@ function corsHeaders(): Record<string, string> {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "no-store, max-age=0",
   };
 }
 
