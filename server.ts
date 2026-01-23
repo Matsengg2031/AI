@@ -84,7 +84,6 @@ function normalizePrompt(s = ""): string {
 for (const [k, v] of recentAnswers) {
   if (now - v.ts > TTL_MS) recentAnswers.delete(k);
 }
-}
 
 // ==================== IMAGE HELPER ====================
 async function fetchImageAsBase64(url: string): Promise<string | null> {
