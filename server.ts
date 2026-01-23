@@ -43,7 +43,6 @@ interface QuestionInput {
   number?: number;
   image?: string; // URL or Base64
 }
-}
 
 interface ModelResult {
   success: boolean;
