@@ -41,6 +41,8 @@ interface QuestionInput {
   options?: QuestionOption[];
   type?: string;
   number?: number;
+  image?: string; // URL or Base64
+}
 }
 
 interface ModelResult {
@@ -80,17 +82,36 @@ function normalizePrompt(s = ""): string {
     .trim();
 }
 
-function vacuum(): void {
-  const now = Date.now();
-  for (const [k, v] of recentAnswers) {
-    if (now - v.ts > TTL_MS) recentAnswers.delete(k);
+for (const [k, v] of recentAnswers) {
+  if (now - v.ts > TTL_MS) recentAnswers.delete(k);
+}
+}
+
+// ==================== IMAGE HELPER ====================
+async function fetchImageAsBase64(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to fetch image: ${response.statusText}`);
+    const arrayBuffer = await response.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+
+    // Manual base64 conversion for Deno compatibility without extra libs
+    let binary = "";
+    const len = uint8Array.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(uint8Array[i]);
+    }
+    return btoa(binary);
+  } catch (error) {
+    console.error("❌ Error fetching image:", error);
+    return null;
   }
 }
 
 // ==================== ERROR FORMATTER (USER-FRIENDLY) ====================
 function formatError(error: Error | string): string {
   const msg = String((error as Error).message || error || "Unknown error");
-  
+
   // Try to parse JSON error from API
   try {
     if (msg.includes('{"error"')) {
@@ -99,7 +120,7 @@ function formatError(error: Error | string): string {
         const parsed = JSON.parse(jsonMatch[0]);
         const code = parsed.error?.code;
         const status = parsed.error?.status;
-        
+
         if (code === 503 || status === "UNAVAILABLE") return "🔄 Server Sibuk";
         if (code === 429) return "⏳ Rate limit";
         if (code === 400 && msg.includes("API key expired")) return "🔑 API key expired";
@@ -109,7 +130,7 @@ function formatError(error: Error | string): string {
       }
     }
   } catch (_) { /* ignore */ }
-  
+
   // Fallback to keyword matching
   if (msg.includes("503") || msg.includes("overload") || msg.includes("UNAVAILABLE")) {
     return "🔄 Server sibuk";
@@ -138,7 +159,7 @@ function formatError(error: Error | string): string {
   if (msg.includes("Empty response") || msg.includes("parse failure")) {
     return "📭 Jawaban kosong";
   }
-  
+
   // Generic - ambil 30 karakter pertama
   return msg.substring(0, 30) + (msg.length > 30 ? "..." : "");
 }
@@ -165,36 +186,40 @@ JSON:
 
   if (typeof input === "object") {
     let prompt = `You are a MikroTik certification exam expert.\n\n`;
-    
+
     prompt += `Goal: Provide the most accurate answer based on deep technical reasoning.\n\n`;
-    
+
+    if (input.image) {
+      prompt += `[IMAGE DETECTED] The question includes an image. Analyze it carefully.\n`;
+    }
+
     prompt += `INSTRUCTIONS:\n`;
-    prompt += `1. Analyze the Question: Identify key constraints (e.g., "invalid", "not", "public IP").\n`;
+    prompt += `1. Analyze the Question & Image: Identify key constraints and visual details.\n`;
     prompt += `2. Analyze Options: Evaluate each option's technical validity.\n`;
     prompt += `3. Chain of Thought: Explain your step-by-step reasoning.\n`;
     prompt += `4. Final Output: Return the answer in strictly valid JSON.\n\n`;
 
     prompt += `Question: ${input.question}\n`;
-    
+
     if (input.options && input.options.length > 0) {
-       prompt += `Options:\n`;
-       input.options.forEach(opt => {
-         prompt += `${opt.label}. ${opt.text}\n`;
-       });
-       
-       if (input.type === "checkbox") {
-         prompt += `\nType: CHECKBOX (select ALL correct answers)\n`;
-       } else if (input.type === "select") {
-         prompt += `\nType: TRUE/FALSE\n`;
-       } else {
-         prompt += `\nType: SINGLE CHOICE\n`;
-       }
+      prompt += `Options:\n`;
+      input.options.forEach(opt => {
+        prompt += `${opt.label}. ${opt.text}\n`;
+      });
+
+      if (input.type === "checkbox") {
+        prompt += `\nType: CHECKBOX (select ALL correct answers)\n`;
+      } else if (input.type === "select") {
+        prompt += `\nType: TRUE/FALSE\n`;
+      } else {
+        prompt += `\nType: SINGLE CHOICE\n`;
+      }
     }
-    
+
     prompt += `\nOutput Format:\n`;
     prompt += `First, write your "Reasoning: ..." block.\n`;
     prompt += `Then, write "JSON: {"answer": "...", "confidence": ...}" on a new line.\n`;
-    
+
     return prompt;
   }
   return "";
@@ -210,11 +235,11 @@ function extractText(response: unknown): string | null {
     if (candidate?.content?.parts?.[0]?.text) {
       return candidate.content.parts[0].text;
     }
-    
+
     // Debug output if text is missing
     console.log(`⚠️ Empty Response Debug: FinishReason=${candidate?.finishReason}`);
     if (candidate?.safetyRatings) {
-       console.log(`⚠️ Safety: ${JSON.stringify(candidate.safetyRatings)}`);
+      console.log(`⚠️ Safety: ${JSON.stringify(candidate.safetyRatings)}`);
     }
   } catch (e) {
     console.log(`⚠️ Extract Error: ${(e as Error).message}`);
@@ -225,9 +250,9 @@ function extractText(response: unknown): string | null {
 // ==================== PARSE ANSWER WITH CONFIDENCE ====================
 function parseAnswerWithConfidence(rawText: string | null): { answer: string; confidence: number } {
   if (!rawText) return { answer: "", confidence: 50 };
-  
+
   const text = rawText.trim();
-  
+
   // Try to parse as JSON first
   try {
     // Remove markdown code blocks if present
@@ -238,7 +263,7 @@ function parseAnswerWithConfidence(rawText: string | null): { answer: string; co
       confidence: Math.min(100, Math.max(0, parseInt(parsed.confidence) || 50))
     };
   } catch (_) { /* ignore */ }
-  
+
   // Try to find JSON object using flexible pattern (handling potential newlines)
   const jsonMatch = text.match(/\{[\s\S]*?"answer"[\s\S]*?\}/);
   if (jsonMatch) {
@@ -253,12 +278,12 @@ function parseAnswerWithConfidence(rawText: string | null): { answer: string; co
       };
     } catch (_) { /* ignore */ }
   }
-  
+
   // Handle TRUE/FALSE responses
   if (/^(true|false)$/i.test(text)) {
     return { answer: text.toLowerCase(), confidence: 85 };
   }
-  
+
   // Fallback: extract ONLY valid answer letters (A-F) - not random letters
   // Look for patterns like "A", "A, B", "A,B,C" at the start or standalone
   const answerPattern = text.match(/^\s*([A-F])(?:\s*[,\s]\s*([A-F]))*\s*$/i);
@@ -271,17 +296,17 @@ function parseAnswerWithConfidence(rawText: string | null): { answer: string; co
       };
     }
   }
-  
+
   // Fallback 2: Look for "Answer: A" or "**Answer**: B" pattern commonly used in reasoning
   const textAnswerMatch = text.match(/(?:answer|jawaban|option)\s*:?\s*(\*+)?\s*([A-F](?:,\s*[A-F])*)(?:\s|$|\*)/i);
   if (textAnswerMatch) {
-     const letters = textAnswerMatch[2].toUpperCase().match(/[A-F]/g);
-     if (letters) {
-        return {
-          answer: [...new Set(letters)].sort().join(", "),
-          confidence: 65
-        };
-     }
+    const letters = textAnswerMatch[2].toUpperCase().match(/[A-F]/g);
+    if (letters) {
+      return {
+        answer: [...new Set(letters)].sort().join(", "),
+        confidence: 65
+      };
+    }
   }
 
   // Last resort: if text is very short and contains only A-F letters
@@ -294,19 +319,44 @@ function parseAnswerWithConfidence(rawText: string | null): { answer: string; co
       };
     }
   }
-  
+
   // Failed to parse - return empty (this model's result will be skipped)
   return { answer: "", confidence: 0 };
 }
 
 // ==================== SINGLE MODEL CALL ====================
 // ==================== SINGLE MODEL CALL (WITH RETRY) ====================
-async function callSingleModel(model: string, prompt: string, retries = 3): Promise<ModelResult> {
+async function callSingleModel(model: string, prompt: string, retries = 3, image?: string): Promise<ModelResult> {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const genModel = ai.getGenerativeModel({ model });
+
+      const parts: any[] = [{ text: prompt }];
+
+      // Add image if available
+      if (image) {
+        // Check if it's already base64 or a URL
+        let base64Data = "";
+        if (image.startsWith("http")) {
+          const fetched = await fetchImageAsBase64(image);
+          if (fetched) base64Data = fetched;
+        } else {
+          // Assume it's already base64 (stripped of prefix if needed, or raw)
+          base64Data = image.replace(/^data:image\/\w+;base64,/, "");
+        }
+
+        if (base64Data) {
+          parts.push({
+            inlineData: {
+              mimeType: "image/jpeg", // Assume JPEG for simplicity, or detect
+              data: base64Data
+            }
+          });
+        }
+      }
+
       const response = await genModel.generateContent({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        contents: [{ role: "user", parts: parts }],
         generationConfig: {
           temperature: 0.4, // Seimbang
           maxOutputTokens: 8192,
@@ -318,7 +368,7 @@ async function callSingleModel(model: string, prompt: string, retries = 3): Prom
           { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
         ]
       });
-      
+
       const rawText = extractText(response.response);
       if (rawText && rawText.trim() !== "") {
         const { answer, confidence } = parseAnswerWithConfidence(rawText);
@@ -326,23 +376,23 @@ async function callSingleModel(model: string, prompt: string, retries = 3): Prom
           return { success: true, answer, confidence, model, raw: rawText };
         }
       }
-      
+
       // If empty, throw error to trigger retry
       throw new Error("Empty response or parse failure");
-      
+
     } catch (err) {
       const isLastAttempt = attempt === retries;
       const errMsg = (err as Error).message;
       const isOverload = errMsg.includes("503") || errMsg.includes("429") || errMsg.includes("Overload");
-      
+
       if (isLastAttempt) {
         return { success: false, model, error: isOverload ? "Server Overload (Max Retries)" : formatError(err as Error) };
       }
-      
+
       // Wait before retry (exponential backoff: 1s, 2s, 4s...)
       const waitTime = isOverload ? 2000 * attempt : 1000 * attempt;
       const friendlyError = formatError(err as Error);
-      console.log(`   ⚠️ ${model}: ${friendlyError} → Retry ${attempt + 1}/${retries} (${Math.round(waitTime/1000)}s)`);
+      console.log(`   ⚠️ ${model}: ${friendlyError} → Retry ${attempt + 1}/${retries} (${Math.round(waitTime / 1000)}s)`);
       await new Promise(r => setTimeout(r, waitTime));
     }
   }
@@ -352,14 +402,14 @@ async function callSingleModel(model: string, prompt: string, retries = 3): Prom
 // ==================== ANSWER NORMALIZATION ====================
 function normalizeAnswer(answer: string | undefined): string[] {
   if (!answer) return [];
-  
+
   const upperAnswer = answer.toUpperCase().trim();
-  
+
   // Handle TRUE/FALSE jawaban (untuk soal dropdown true/false)
   if (upperAnswer === "TRUE" || upperAnswer === "FALSE") {
     return [upperAnswer.toLowerCase()]; // return as "true" or "false"
   }
-  
+
   // Handle regular letter answers (A, B, C, etc.)
   const labels = upperAnswer
     .split(/[\s,]+/)
@@ -371,11 +421,11 @@ function normalizeAnswer(answer: string | undefined): string[] {
 // ==================== CONFIDENCE-WEIGHTED VOTING ====================
 function _confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
   const successfulResults = modelResults.filter(r => r.success);
-  
+
   if (successfulResults.length === 0) {
     throw new Error("All models failed in ensemble");
   }
-  
+
   // Jika hanya 1 model berhasil → langsung pakai
   if (successfulResults.length === 1) {
     const r = successfulResults[0];
@@ -387,7 +437,7 @@ function _confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
       method: "single"
     };
   }
-  
+
   // STEP 1: Penalize models that give too many answers (4+ = unreliable)
   const reliableResults = successfulResults.map(r => {
     const labels = normalizeAnswer(r.answer);
@@ -397,7 +447,7 @@ function _confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
     }
     return { ...r, unreliable: false };
   });
-  
+
   // STEP 2: Look for EXACT answer matches between models
   const answerCounts: Record<string, { count: number; totalConfidence: number; models: string[] }> = {};
   reliableResults.forEach(r => {
@@ -409,7 +459,7 @@ function _confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
     answerCounts[key].totalConfidence += r.confidence!;
     answerCounts[key].models.push(r.model);
   });
-  
+
   // Sort by count desc, then by avg confidence desc
   const sortedAnswers = Object.entries(answerCounts)
     .map(([answer, data]) => ({
@@ -422,12 +472,12 @@ function _confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
       if (b.count !== a.count) return b.count - a.count;
       return b.avgConfidence - a.avgConfidence;
     });
-  
+
   let finalAnswer: string, finalConfidence: number, method: string;
-  
+
   // STEP 3: Decision logic
   const topAnswer = sortedAnswers[0];
-  
+
   if (topAnswer && topAnswer.count >= 2) {
     // Majority consensus (2+ models agree on EXACT answer)
     finalAnswer = topAnswer.answer;
@@ -436,7 +486,7 @@ function _confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
   } else {
     // No consensus → use PRIMARY model (first in MODELS list)
     const primaryResult = reliableResults.find(r => r.model === MODELS[0] && !r.unreliable);
-    
+
     if (primaryResult) {
       finalAnswer = primaryResult.answer!;
       finalConfidence = primaryResult.confidence!;
@@ -444,14 +494,14 @@ function _confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
     } else {
       // Primary model unreliable → use second model
       const secondaryResult = reliableResults.find(r => r.model === MODELS[1] && !r.unreliable);
-      
+
       if (secondaryResult) {
         finalAnswer = secondaryResult.answer!;
         finalConfidence = secondaryResult.confidence!;
         method = "secondary";
       } else {
         // All unreliable → pick the one with highest confidence anyway
-        const best = reliableResults.reduce((a, b) => 
+        const best = reliableResults.reduce((a, b) =>
           a.confidence! > b.confidence! ? a : b
         );
         finalAnswer = best.answer!;
@@ -460,35 +510,35 @@ function _confidenceWeightedVote(modelResults: ModelResult[]): VotingResult {
       }
     }
   }
-  
+
   // Build votes summary for logging
   const votes: Record<string, { count: number; avgConfidence: number }> = {};
   sortedAnswers.forEach(a => {
     votes[a.answer] = { count: a.count, avgConfidence: a.avgConfidence };
   });
-  
+
   return {
     finalAnswer,
     finalConfidence,
     votes,
-    modelAnswers: reliableResults.map(r => ({ 
-      model: r.model + (r.unreliable ? " ⚠️" : ""), 
-      answer: r.answer!, 
-      confidence: r.confidence! 
+    modelAnswers: reliableResults.map(r => ({
+      model: r.model + (r.unreliable ? " ⚠️" : ""),
+      answer: r.answer!,
+      confidence: r.confidence!
     })),
     method
   };
 }
 
 // ==================== ENSEMBLE CALL (JUDGE MODE) ====================
-async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []): Promise<VotingResult> {
+async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = [], image?: string): Promise<VotingResult> {
   console.log(`🎯 Judge Mode: Running 3 Workers Parallel...`);
-  
+
   // 1. Run Worker 1, Worker 2 & Worker 3 in parallel
   const workers = [MODELS[0], MODELS[1], MODELS[2]];
-  const promises = workers.map(model => callSingleModel(model, prompt));
+  const promises = workers.map(model => callSingleModel(model, prompt, 3, image));
   const results = await Promise.all(promises);
-  
+
   // Log Worker Results
   results.forEach(r => {
     if (r.success) console.log(`   ✓ ${r.model}: ${r.answer} (${r.confidence}%)`);
@@ -500,22 +550,22 @@ async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []
   const normalize = (ans: string | undefined, opts: QuestionOption[]): string => {
     if (!ans) return "";
     const a = ans.trim().toUpperCase();
-    
+
     // Handle TRUE/FALSE directly
     if (/^TRUE$/i.test(a)) return "true";
     if (/^FALSE$/i.test(a)) return "false";
-    
+
     // For single letter A or B, check if this is a TRUE/FALSE question
     // by looking at options (if available)
     if (opts && opts.length === 2) {
       const optTexts = opts.map(o => o.text.toLowerCase().trim());
       const isTrueFalseQuestion = optTexts.includes("true") || optTexts.includes("false");
-      
+
       if (isTrueFalseQuestion) {
         // Find which option maps to true/false
         const trueOpt = opts.find(o => o.text.toLowerCase().trim() === "true");
         const falseOpt = opts.find(o => o.text.toLowerCase().trim() === "false");
-        
+
         // If answer is A or B, convert to true/false
         if (a === "A" && trueOpt && trueOpt.label === "A") return "true";
         if (a === "A" && falseOpt && falseOpt.label === "A") return "false";
@@ -523,7 +573,7 @@ async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []
         if (a === "B" && falseOpt && falseOpt.label === "B") return "false";
       }
     }
-    
+
     // Extract ALL valid answer letters (A-F) from the string
     // This handles: "D", "D. MAC ADDRESS", "A, B", "A,B,C", etc.
     const letters = a.match(/[A-F]/g);
@@ -531,19 +581,19 @@ async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []
       // Sort and dedupe
       return [...new Set(letters)].sort().join(", ");
     }
-    
+
     // Fallback: try to find matching option text
     if (opts && opts.length > 0) {
       const exact = opts.find(o => o.text && o.text.trim().toLowerCase() === a.toLowerCase());
       if (exact) return exact.label;
     }
-    
+
     return a; // Return original if no match
   };
 
   // Normalize all worker answers
   const normalizedAnswers = results.map(r => r.success ? normalize(r.answer, options) : null);
-  
+
   // Count votes for each answer
   const voteCounts: Record<string, { count: number; totalConfidence: number; models: string[] }> = {};
   results.forEach((r, i) => {
@@ -585,9 +635,9 @@ async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []
 
   // 3. No majority (all 3 different or failures) -> Call JUDGE (Model 4)
   console.log(`   ⚖️  No majority. Calling JUDGE (${MODELS[3]})...`);
-  
-  const judgeResult = await callSingleModel(MODELS[3], prompt);
-  
+
+  const judgeResult = await callSingleModel(MODELS[3], prompt, 3, image);
+
   if (judgeResult.success) {
     console.log(`   👨‍⚖️ Judge Decision: ${judgeResult.answer} (${judgeResult.confidence}%)`);
     return {
@@ -598,13 +648,13 @@ async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []
   } else {
     // If Judge fails, fallback to whichever worker succeeded with highest confidence
     console.log(`   ⚠️ Judge failed. Fallback to best worker.`);
-    const best = results.filter(r => r.success).sort((a,b) => b.confidence! - a.confidence!)[0];
+    const best = results.filter(r => r.success).sort((a, b) => b.confidence! - a.confidence!)[0];
     if (best) {
-       return {
-         finalAnswer: best.answer!,
-         finalConfidence: best.confidence!,
-         method: "fallback_worker"
-       };
+      return {
+        finalAnswer: best.answer!,
+        finalConfidence: best.confidence!,
+        method: "fallback_worker"
+      };
     }
   }
 
@@ -612,18 +662,18 @@ async function callGeminiEnsemble(prompt: string, options: QuestionOption[] = []
 }
 
 // ==================== FAILOVER CALL (Non-Ensemble) ====================
-async function callGeminiWithFailover(prompt: string): Promise<{ result: string; model: string; confidence: number }> {
+async function callGeminiWithFailover(prompt: string, image?: string): Promise<{ result: string; model: string; confidence: number }> {
   for (let i = 0; i < MODELS.length; i++) {
     const model = MODELS[i];
-    const result = await callSingleModel(model, prompt);
-    
+    const result = await callSingleModel(model, prompt, 3, image);
+
     if (result.success) {
       return { result: result.answer!, model, confidence: result.confidence! };
     }
-    
+
     console.log(`⚠️  ${model}: ${result.error}, trying next...`);
   }
-  
+
   throw new Error("All models failed");
 }
 
@@ -640,18 +690,19 @@ async function processQueue(): Promise<void> {
 
     try {
       let finalAnswer: string, modelInfo: string, confidence: number;
-      
+
       // 🤖 AI Fallback: Use Ensemble or Single Model
       const prompt = buildPrompt(rawPrompt);
       const options = (typeof rawPrompt === 'object' && rawPrompt.options) ? rawPrompt.options : [];
-      
+      const image = (typeof rawPrompt === 'object' && rawPrompt.image) ? rawPrompt.image : undefined;
+
       if (ENSEMBLE_MODE) {
-        const voting = await callGeminiEnsemble(prompt, options);
+        const voting = await callGeminiEnsemble(prompt, options, image);
         finalAnswer = voting.finalAnswer;
         confidence = voting.finalConfidence;
         modelInfo = `ENSEMBLE [${voting.method}]`;
       } else {
-        const { result, model, confidence: conf } = await callGeminiWithFailover(prompt);
+        const { result, model, confidence: conf } = await callGeminiWithFailover(prompt, image);
         finalAnswer = result;
         confidence = conf;
         modelInfo = model;
@@ -705,15 +756,15 @@ async function handler(req: Request): Promise<Response> {
   }
 
   // ==================== ROUTES ====================
-  
+
   // GET /health
   if (method === "GET" && path === "/health") {
-    return new Response(JSON.stringify({ 
-      ok: true, 
+    return new Response(JSON.stringify({
+      ok: true,
       ensemble: ENSEMBLE_MODE,
       confidenceThreshold: CONFIDENCE_THRESHOLD,
-      queue: requestQueue.length, 
-      cache: recentAnswers.size 
+      queue: requestQueue.length,
+      cache: recentAnswers.size
     }), {
       status: 200,
       headers: { ...corsHeaders(), "Content-Type": "application/json" }
@@ -733,7 +784,7 @@ async function handler(req: Request): Promise<Response> {
     try {
       const body = await req.json();
       const input = body.prompt;
-      
+
       if (!input) {
         return new Response(JSON.stringify({ error: "Prompt kosong." }), {
           status: 400,
@@ -747,7 +798,7 @@ async function handler(req: Request): Promise<Response> {
         key = normalizePrompt(rawPrompt);
       } else {
         rawPrompt = input as QuestionInput;
-        key = normalizePrompt(input.question) + "_" + JSON.stringify(input.options);
+        key = normalizePrompt(input.question) + "_" + JSON.stringify(input.options) + "_" + (input.image || "");
       }
 
       vacuum();
@@ -831,6 +882,6 @@ console.log(`   Models: ${MODELS.join(", ")}`);
 console.log(`   Mode: HYBRID (Rule Engine + AI Reasoning)`);
 console.log(`   Ensemble: ${ENSEMBLE_MODE ? "ON ✓" : "OFF"}`);
 console.log(`   Confidence Threshold: ${CONFIDENCE_THRESHOLD}%`);
-console.log(`   Cache TTL: ${TTL_MS/1000}s`);
+console.log(`   Cache TTL: ${TTL_MS / 1000}s`);
 
 Deno.serve(handler);
